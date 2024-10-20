@@ -4,14 +4,31 @@ import torch
 import torch.nn as nn
 from torchvision import models, transforms
 import numpy as np
-from pymilvus import connections, Collection, FieldSchema, DataType, CollectionSchema  # Added necessary imports
+from pymilvus import connections, Collection, FieldSchema, DataType, CollectionSchema, utility  # Added necessary imports
 
 # Path to the folder containing images
 image_folder_path = "combine"  # Replace with the path to your folder
 
 # Connect to Milvus
+# Function to create an index on the collection
+def create_index(collection):
+    index_params = {
+        "index_type": "IVF_FLAT",
+        "metric_type": "L2",
+        "params": {"nlist": 128},
+    }
+    collection.create_index(field_name="embeddings", index_params=index_params)
+    print("Index created on 'embeddings' field.")
 def connect_to_milvus():
     connections.connect("default", host="localhost", port="19530")
+    collection_name = "image_embeddings"
+    if utility.has_collection(collection_name):
+        collection = Collection(collection_name)
+        collection.drop()
+        print(f"Collection '{collection_name}' dropped.")
+    else:
+        print(f"Collection '{collection_name}' does not exist.")
+
     create_collection()
     collection = Collection("image_embeddings")  # Replace "image_embeddings" with your collection name
     return collection
@@ -39,8 +56,12 @@ _transform = transforms.Compose([
 
 def create_collection():
     # Define fields for the schema
+    collection_name = "image_embeddings"
+    if utility.has_collection(collection_name):
+        print(f"Collection '{collection_name}' already exists. Loading existing collection.")
+        return Collection(collection_name)
     fields = [
-        FieldSchema(name="image_ids", dtype=DataType.INT64, is_primary=True, auto_id=False),
+        FieldSchema(name="image_name", dtype=DataType.VARCHAR, is_primary=True, max_length=255),
         FieldSchema(name="embeddings", dtype=DataType.FLOAT_VECTOR, dim=512)  # Adjust dim according to your model's output
     ]
 
@@ -61,7 +82,7 @@ def generate_embedding(image, model, device):
 # Generate embeddings for all images in a folder and store them in Milvus
 def process_folder_and_store_embeddings(folder_path, model, device, collection):
     embeddings = []
-    image_ids = []
+    image_names = []
     image_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(('.jpg', '.png', '.jpeg'))]
 
     for idx, img_path in enumerate(image_paths):
@@ -69,7 +90,8 @@ def process_folder_and_store_embeddings(folder_path, model, device, collection):
             image = Image.open(img_path).convert('RGB')
             embedding = generate_embedding(image, model, device)
             embeddings.append(embedding.astype(np.float32))
-            image_ids.append(idx)  # Use the index as the image ID
+            image_name = os.path.basename(img_path)  # Use the filename as the unique identifier
+            image_names.append(image_name)
             print(f"done generating embedding for {img_path}")
         except Exception as e:
             print(f"Error processing {img_path}: {e}")
@@ -77,13 +99,12 @@ def process_folder_and_store_embeddings(folder_path, model, device, collection):
     # Insert data into Milvus
     if embeddings:
         # Convert lists into NumPy arrays
-        embeddings_np = np.vstack(embeddings)  # Stack into a 2D NumPy array of shape (num_images, 512)
-        image_ids_np = np.array(image_ids, dtype=np.int64)  # Convert IDs to np.int64
-
+        embeddings_np = np.vstack(embeddings)  # Stack into a 2D NumPy array of shape (num_images, 512
         # Insert data directly as a list of arrays into the Milvus collection
-        collection.insert([image_ids_np, embeddings_np])
+        collection.insert([image_names, embeddings_np])
         collection.flush()
         print(f"Inserted {len(embeddings)} image embeddings into the Milvus collection.")
+        create_index(collection)
     else:
         print("No embeddings were generated.")
 
