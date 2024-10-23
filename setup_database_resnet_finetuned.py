@@ -5,12 +5,25 @@ import torch.nn as nn
 from torchvision import models, transforms
 import numpy as np
 from pymilvus import connections, Collection, FieldSchema, DataType, CollectionSchema, utility  # Added necessary imports
+import uuid
 
 # Path to the folder containing images
 image_folder_path = "combine"  # Replace with the path to your folder
 
 # Connect to Milvus
 # Function to create an index on the collection
+
+def generate_copyright_id():
+    with open("copyright_ids.txt","r") as file:
+        old_data=eval(file.read())
+        while True:
+            uid=uuid.uuid4()
+            try:
+                old_data[uid]
+            except Exception as e:
+                print(e)
+                return uid, old_data
+
 def create_index(collection):
     index_params = {
         "index_type": "IVF_FLAT",
@@ -83,15 +96,20 @@ def process_folder_and_store_embeddings(folder_path, model, device, collection):
     image_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(('.jpg', '.png', '.jpeg'))]
 
     for idx, img_path in enumerate(image_paths):
-        try:
-            image = Image.open(img_path).convert('RGB')
-            embedding = generate_embedding(image, model, device)
-            embeddings.append(embedding.astype(np.float32))
-            image_name = os.path.basename(img_path)  # Use the filename as the unique identifier
-            image_names.append(image_name)
-            print(f"done generating embedding for {img_path}")
-        except Exception as e:
-            print(f"Error processing {img_path}: {e}")
+        image = Image.open(img_path).convert('RGB')
+        embedding = generate_embedding(image, model, device)
+        embeddings.append(embedding.astype(np.float32))
+        image_name = os.path.basename(img_path)  # Use the filename as the unique identifier
+        uid, old_data= generate_copyright_id()
+        copyright_id=str(uid)
+        image_metadata={"copyright_id":copyright_id,"image_name":img_path, "flags":["normal"], "platform_metadata":None}
+        print(image_metadata)
+        with open("copyright_ids.txt", "w") as file:
+            old_data["hello"]=image_metadata
+            old_data=str(old_data)
+            file.write(old_data)
+        image_names.append(str(image_metadata))
+        print(f"done generating embedding for {img_path}")
 
     # Insert data into Milvus
     if embeddings:
