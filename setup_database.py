@@ -5,12 +5,25 @@ import torch.nn as nn
 from torchvision import models, transforms
 import numpy as np
 from pymilvus import connections, Collection, FieldSchema, DataType, CollectionSchema, utility  # Added necessary imports
+import uuid
 
 # Path to the folder containing images
 image_folder_path = "combine"  # Replace with the path to your folder
 
 # Connect to Milvus
 # Function to create an index on the collection
+
+def generate_copyright_id():
+    with open("copyright_ids.txt","r") as file:
+        old_data=eval(file.read())
+        while True:
+            uid=uuid.uuid4()
+            try:
+                old_data[uid]
+            except Exception as e:
+                print(e)
+                return uid, old_data
+
 def create_index(collection):
     index_params = {
         "index_type": "IVF_FLAT",
@@ -34,7 +47,17 @@ def connect_to_milvus():
     return collection
 
 # Load the ResNet-34 model and use it as an embedding generator
-def load_embedding_model():
+def load_embedding_model_finetuned():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = models.resnet34(pretrained=False)  # Set pretrained=False to prevent downloading
+    # Load the saved state dictionary from your local file
+    model = torch.load('ai_vs_nonai_model_34.pth', map_location=device)
+    embedding_model = nn.Sequential(*list(model.children())[:-1])
+    embedding_model.eval()
+    embedding_model.to(device)
+    return embedding_model, device
+
+def load_embedding_model_pretrained():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = models.resnet34(pretrained=False)  # Set pretrained=False to prevent downloading
     # Load the saved state dictionary from your local file
@@ -52,7 +75,7 @@ _transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
+]) 
 
 def create_collection():
     # Define fields for the schema
@@ -86,15 +109,20 @@ def process_folder_and_store_embeddings(folder_path, model, device, collection):
     image_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(('.jpg', '.png', '.jpeg'))]
 
     for idx, img_path in enumerate(image_paths):
-        try:
-            image = Image.open(img_path).convert('RGB')
-            embedding = generate_embedding(image, model, device)
-            embeddings.append(embedding.astype(np.float32))
-            image_name = os.path.basename(img_path)  # Use the filename as the unique identifier
-            image_names.append(image_name)
-            print(f"done generating embedding for {img_path}")
-        except Exception as e:
-            print(f"Error processing {img_path}: {e}")
+        image = Image.open(img_path).convert('RGB')
+        embedding = generate_embedding(image, model, device)
+        embeddings.append(embedding.astype(np.float32))
+        image_name = os.path.basename(img_path)  # Use the filename as the unique identifier
+        uid, old_data= generate_copyright_id()
+        copyright_id=str(uid)
+        image_metadata={"copyright_id":copyright_id,"image_name":img_path, "flags":["normal"], "platform_metadata":None}
+        with open("copyright_ids.txt", "w") as file:
+            old_data[copyright_id]=image_metadata
+            print(old_data)
+            old_data=str(old_data)
+            file.write(old_data)
+        image_names.append(str({"copyright_id":copyright_id}))
+        print(f"done generating embedding for {img_path}")
 
     # Insert data into Milvus
     if embeddings:
@@ -112,7 +140,7 @@ def process_folder_and_store_embeddings(folder_path, model, device, collection):
 # Main function to run the process
 if __name__ == "__main__":
     # Load the model and connect to Milvus
-    embedding_model, device = load_embedding_model()
+    embedding_model, device = load_embedding_model_finetuned()
     milvus_collection = connect_to_milvus()
 
     # Process images from the folder and store them in Milvus
